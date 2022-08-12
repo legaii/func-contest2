@@ -1,0 +1,148 @@
+{-
+
+  TASK 4 - (De)Serialize to Cell
+  Write the methods
+    a) for serialization of tuple of arbitrary values of different types to Cell
+    b) for deserialization of Cell created by method above to original tuple
+
+  `serialize` method gets as input tuple with arbitrary number of elements from 0
+  to 128 (both 0 and 128 elements are allowed) and outputs Cell. Elements of the
+  tuple may be `null`, `int`, `cell`, `slice`, `tuple` (with the same limitations
+  as original tuple). It is guaranteed that the maximum nesting level of tuples
+  is less than 4 and total number of elements less than 1024.
+  `deserialize` method gets a cell produced by `serialize` method and should
+  return origin tuple.
+
+  Note, for illustrative purposes`serialize_t3` and `deserialize_t3` functions
+  which serialize and deserialize tuple with exactly 3 elements
+  (only null, int, cell and slice are supportd) to/from a cell  have been added.
+  Participants are free to not use logic from there and come up with their own
+  implementations.
+
+  Tests will only check that test_tuple == deserialize(serialize(test_tuple)).
+  Intermediate representation can be arbitrary.
+-}
+
+
+
+(builder, ()) serialize_tuple(builder b, tuple t);
+(slice, tuple) deserialize_tuple(slice s);
+
+() recv_internal() {
+}
+
+;; testable
+(cell) serialize(tuple values) method_id {
+  builder b = begin_cell();
+  b~serialize_tuple(values);
+  return b.end_cell();
+}
+
+;; testable
+(tuple) deserialize(cell serialized) method_id {
+  slice s = serialized.begin_parse();
+  return s~deserialize_tuple();
+}
+
+
+
+{-
+  (De)Serialization Scheme:
+  null:           000
+  int:            001{257 bits}
+  cell:           002{ref}
+  slice:          003{ref}
+  empty tuple:    004
+  nonempty tuple: 005{ref to serialization of t[:-1]}{serialization of t[-1]}
+-}
+
+
+(builder, ()) serialize_null(builder b) {
+  return (b.store_uint(0, 3), ());
+}
+
+(builder, ()) serialize_int(builder b, int i) {
+  return (b.store_uint(1, 3).store_int(i, 257), ());
+}
+
+(builder, ()) serialize_cell(builder b, cell c) {
+  return (b.store_uint(2, 3).store_ref(c), ());
+}
+
+(builder, ()) serialize_slice(builder b, slice s) {
+  return (b.store_uint(3, 3).store_ref(begin_cell().store_slice(s).end_cell()), ());
+}
+
+(builder, ()) serialize_tuple(builder b, tuple t) {
+  if (t.tuple_length() == 0) {
+    b~store_uint(4, 3);
+  } else {
+    b~store_uint(5, 3);
+    var x = t~tpop();
+    builder b' = begin_cell();
+    b'~serialize_tuple(t);
+    b = b.store_ref(b'.end_cell());
+    if (is_null(x)) {
+      b~serialize_null();
+    }
+    if (is_int(x)) {
+      b~serialize_int(x.force_cast_to_int());
+    }
+    if (is_cell(x)) {
+      b~serialize_cell(x.force_cast_to_cell());
+    }
+    if (is_slice(x)) {
+      b~serialize_slice(x.force_cast_to_slice());
+    }
+    if (is_tuple(x)) {
+      b~serialize_tuple(x.force_cast_to_tuple());
+    }
+  }
+  return (b, ());
+}
+
+(slice, var) deserialize_null(slice s) {
+  s~skip_bits(3);
+  return (s, null());
+}
+
+(slice, int) deserialize_int(slice s) {
+  s~skip_bits(3);
+  return s.load_int(257);
+}
+
+(slice, cell) deserialize_cell(slice s) {
+  s~skip_bits(3);
+  return s.load_ref();
+}
+
+(slice, slice) deserialize_slice(slice s) {
+  s~skip_bits(3);
+  cell c = s~load_ref();
+  return (s, c.begin_parse());
+}
+
+(slice, tuple) deserialize_tuple(slice s) {
+  if (s~load_uint(3) == 4) {
+    return (s, empty_tuple());
+  }
+  slice s' = s~load_ref().begin_parse();
+  tuple t = s'~deserialize_tuple();
+  int element_type = s.preload_uint(3);
+  if (element_type == 0) {
+    t~tpush(s~deserialize_null());
+  }
+  if (element_type == 1) {
+    t~tpush(s~deserialize_int());
+  }
+  if (element_type == 2) {
+    t~tpush(s~deserialize_cell());
+  }
+  if (element_type == 3) {
+    t~tpush(s~deserialize_slice());
+  }
+  if (element_type >= 4) {
+    t~tpush(s~deserialize_tuple());
+  }
+  return (s, t);
+}

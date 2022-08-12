@@ -1,0 +1,220 @@
+{-
+
+  TASK 3 - Message validation.
+  Write the method that checks that cell contains valid message
+  in accordance to https://github.com/ton-blockchain/ton/blob/master/crypto/block/block.tlb#L155
+  Note, tests will only cover valid and invalid MessageAny objects,
+  valid MessageRelaxed (which are not simultaneously MessageAny) will not be presented
+  If message is invalid for any reason - method should return (0, null), otherwise
+  it should return (-1, [slice src, slice dest, int amount] ), where src, dest and
+  amount represents source of the message, destination of the message and attached
+  amount of TONs. If any of those values are not presented (or presented as
+  addr_none slice) in the message cell - they should be substituted with null.
+  It is guaranteed that for all tests any HashmapE datatype in message structure
+  is empty hashmaps (has hme_empty constructor).
+  Documentation on TL-B schemes can be found in https://ton.org/docs/#/overviews/TL-B
+-}
+
+
+
+{-
+  Define quite versions of (pre)load functions that return null if
+  something goes wrong.
+-}
+
+(slice, slice) load_bits_q(slice s, int len) asm
+  "LDSLICEXQ" "NULLROTRIFNOT" "DROP" "SWAP";
+
+(slice, int) load_uint_q(slice s, int len) asm
+  "LDUXQ" "NULLROTRIFNOT" "DROP" "SWAP";
+
+(slice, slice) load_msg_addr_q(slice s) asm
+  "LDMSGADDRQ" "NULLROTRIFNOT" "DROP" "SWAP";
+
+(slice, int) load_coins_q(slice s) {
+  int len = s~load_uint_q(4);
+  if (len.is_null()) {
+    return (s, null());
+  }
+  return s.load_uint_q(len * 8);
+}
+
+
+() recv_internal() {
+}
+
+
+;; testable
+(int, tuple) validate_message(cell message) method_id {
+  slice s = message.begin_parse();
+
+  int msg_type = s~load_uint_q(2);
+  if (msg_type.is_null()) {
+    return (0, null());
+  }
+
+  if (msg_type <= 1) {
+    if (s~load_bits_q(2).is_null()) {
+      return (0, null());
+    }
+  }
+
+  slice src = s~load_msg_addr_q();
+  if (src.is_null()) {
+    return (0, null());
+  }
+  tuple src_t = src.parse_addr();
+  if (src_t.tuple_length() == 1) {
+    src = null();
+  }
+  int src_ext = src_t.tuple_length() <= 2;
+
+  slice dest = s~load_msg_addr_q();
+  if (dest.is_null()) {
+    return (0, null());
+  }
+  tuple dest_t = dest.parse_addr();
+  if (dest_t.tuple_length() == 1) {
+    dest = null();
+  }
+  int dest_ext = dest_t.tuple_length() <= 2;
+
+  if (
+    ((msg_type <= 1) & ~(~(src_ext) & ~(dest_ext))) |
+    ((msg_type == 2) & ~(src_ext & ~(dest_ext))) |
+    ((msg_type == 3) & ~(~(src_ext) & dest_ext))
+  ) {
+    return (0, null());
+  }
+
+  int amount = null();
+
+  if (msg_type <= 1) {
+    amount = 0;
+
+    int grams = s~load_coins_q();
+    if (grams.is_null()) {
+      return (0, null());
+    }
+    amount += grams;
+
+    if (s~load_bits_q(1).is_null()) {
+      return (0, null());
+    }
+
+    int ihr_fee = s~load_coins_q();
+    if (ihr_fee.is_null()) {
+      return (0, null());
+    }
+    amount += ihr_fee;
+
+    int fwd_fee = s~load_coins_q();
+    if (fwd_fee.is_null()) {
+      return (0, null());
+    }
+    amount += fwd_fee;
+  }
+
+  if (msg_type == 2) {
+    if (s~load_coins_q().is_null()) {
+      return (0, null());
+    }
+  } else {
+    if (s~load_uint_q(64).is_null()) {
+      return (0, null());
+    }
+
+    if (s~load_uint_q(32).is_null()) {
+      return (0, null());
+    }
+  }
+
+  int init_maybe = s~load_uint_q(1);
+  if (init_maybe.is_null()) {
+    return (0, null());
+  }
+
+  if (init_maybe) {
+    int is_ref = s~load_uint_q(1);
+    if (is_ref.is_null()) {
+      return (0, null());
+    }
+
+    slice s' = s;
+    
+    if (is_ref) {
+      if (s.slice_refs_empty?()) {
+        return (0, null());
+      }
+      s = s~load_ref().begin_parse();
+    }
+
+    int split_depth_maybe = s~load_uint_q(1);
+    if (split_depth_maybe.is_null()) {
+      return (0, null());
+    }
+
+    if (split_depth_maybe) {
+      if (s~load_uint_q(5).is_null()) {
+        return (0, null());
+      }
+    }
+
+    int special_maybe = s~load_uint_q(1);
+    if (special_maybe.is_null()) {
+      return (0, null());
+    }
+
+    if (special_maybe) {
+      if (s~load_bits_q(2).is_null()) {
+        return (0, null());
+      }
+    }
+
+    int code_maybe = s~load_uint_q(1);
+    if (code_maybe.is_null()) {
+      return (0, null());
+    }
+
+    if (code_maybe) {
+      if (s.slice_refs_empty?()) {
+        return (0, null());
+      }
+      s~load_ref();
+    }
+
+    int data_maybe = s~load_uint_q(1);
+    if (data_maybe.is_null()) {
+      return (0, null());
+    }
+
+    if (data_maybe) {
+      if (s.slice_refs_empty?()) {
+        return (0, null());
+      }
+      s~load_ref();
+    }
+
+    if (s~load_bits_q(1).is_null()) {
+      return (0, null());
+    }
+
+    if (is_ref) {
+      s = s';
+    }
+  }
+
+  int is_ref = s~load_uint_q(1);
+  if (is_ref.is_null()) {
+    return (0, null());
+  }
+
+  if (is_ref) {
+    if (s.slice_refs_empty?()) {
+      return (0, null());
+    }
+    s~load_ref();
+  }
+
+  return (-1, unsafe_tuple([src, dest, amount]));
+}
